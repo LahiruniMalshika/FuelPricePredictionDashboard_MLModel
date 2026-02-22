@@ -69,8 +69,8 @@ st.sidebar.subheader("📈 Economic Indicators")
 
 if data_loaded:
     latest = historical_df.iloc[-1]
-    crude_oil = st.sidebar.number_input("🛢️ Crude Oil (USD/barrel)", 0.0, 200.0, float(latest['Crude_Oil_USD']), 0.1)
-    exchange_rate = st.sidebar.number_input("💱 USD/LKR Exchange Rate", 0.0, 500.0, float(latest['Exchange Rate']), 0.1)
+    crude_oil = st.sidebar.number_input("🛢️ Crude Oil (USD/barrel)", 0.0, 300.0, float(latest['Crude_Oil_USD']), 1.0)
+    exchange_rate = st.sidebar.number_input("💱 USD/LKR Exchange Rate", 0.0, 500.0, float(latest['Exchange Rate']), 1.0)
     gdp_growth = st.sidebar.number_input("📊 GDP Growth (%)", -20.0, 20.0, float(latest['GDP_Growth_Pct']), 0.1)
     inflation = st.sidebar.number_input("📈 Inflation (%)", -10.0, 100.0, float(latest['Inflation_Rate']), 0.1)
 else:
@@ -78,15 +78,16 @@ else:
 
 predict_button = st.sidebar.button("Predict All Fuels", type="primary", use_container_width=True)
 
-# Update session state when button is clicked
 if predict_button:
     st.session_state['predicted'] = True
 
 # ========== FEATURE PREPARATION ==========
 def prepare_features(target_date, df, crude, exch, gdp, inf):
     target_date = pd.to_datetime(target_date)
-    hist = df[df['Date'] < target_date].tail(31).copy()
-    if len(hist) < 1: return None, None
+    hist = df[df['Date'] < target_date].tail(30).copy()
+    
+    if len(hist) < 30: 
+        hist = df.tail(30).copy()
 
     targets = ['LP_92', 'LP_95', 'LAD', 'LSD', 'LK']
     last_prices = {t: hist[t].iloc[-1] for t in targets}
@@ -97,10 +98,15 @@ def prepare_features(target_date, df, crude, exch, gdp, inf):
         'Month_Cos': np.cos(2*np.pi*target_date.month/12),
         'Quarter': (target_date.month-1)//3 + 1,
         'Is_Weekend': 1 if target_date.weekday() >= 5 else 0,
-        'Crude_Oil_USD': crude, 'Crude_Oil_lag_7': crude, 'Crude_Oil_lag_30': crude,
-        'Exchange Rate': exch, 'Exchange_Rate_pct_change': 0.0,
-        'Crude_Oil_LKR': crude * exch, 'GDP_Growth_Pct': gdp,
-        'Inflation_Rate': inf, 'Inflation_adj_factor': (inf/100) * exch,
+        'Crude_Oil_USD': crude, 
+        'Crude_Oil_lag_7': crude, 
+        'Crude_Oil_lag_30': crude,
+        'Exchange Rate': exch, 
+        'Exchange_Rate_pct_change': 0.0,
+        'Crude_Oil_LKR': crude * exch, 
+        'GDP_Growth_Pct': gdp,
+        'Inflation_Rate': inf, 
+        'Inflation_adj_factor': (inf/100) * exch,
         'Is_Sinhala_Tamil_New_Year': 1 if (target_date.month==4 and target_date.day in [13,14]) else 0,
         'Is_Vesak': 1 if (target_date.month==5 and 15<=target_date.day<=25) else 0,
         'Is_Christmas': 1 if (target_date.month==12 and target_date.day==25) else 0,
@@ -110,20 +116,21 @@ def prepare_features(target_date, df, crude, exch, gdp, inf):
         'Is_Recovery_Period': 1 if target_date.year>=2023 else 0
     }
 
+    # FIX: Properly compute all 35 rolling/lag features for the scaler
     for t in targets:
-        vals = hist[t].tail(30).tolist()
-        while len(vals) < 30: vals.insert(0, vals[0])
+        vals = hist[t].tolist()
         
         features[f'{t}_lag_1'] = vals[-1]
-        features[f'{t}_lag_7'] = vals[-7] if len(vals)>=7 else vals[-1]
+        features[f'{t}_lag_7'] = vals[-7]
         features[f'{t}_lag_30'] = vals[0]
         features[f'{t}_rolling_mean_7'] = np.mean(vals[-7:])
         features[f'{t}_rolling_std_7'] = np.std(vals[-7:])
+        features[f'{t}_rolling_mean_30'] = np.mean(vals)
+        features[f'{t}_rolling_std_30'] = np.std(vals)
         
     return features, last_prices
 
 # ========== MAIN LOGIC ==========
-# Notice we now check the session_state here!
 if data_loaded and st.session_state['predicted']:
     with st.spinner("Calculating predictions & explanations..."):
         feat_dict, last_prices = prepare_features(prediction_date, historical_df, crude_oil, exchange_rate, gdp_growth, inflation)
@@ -132,6 +139,12 @@ if data_loaded and st.session_state['predicted']:
             st.error("Not enough historical data.")
         else:
             feat_df = pd.DataFrame([feat_dict])
+            
+            # Warn developer if any features are missing (prevents silent bugs)
+            missing_cols = [c for c in feature_names if c not in feat_df.columns]
+            if missing_cols:
+                st.warning(f"Warning: Features missing: {missing_cols}")
+                
             for col in feature_names:
                 if col not in feat_df.columns: feat_df[col] = 0
             feat_df = feat_df[feature_names]
@@ -175,7 +188,6 @@ if data_loaded and st.session_state['predicted']:
             st.markdown("---")
             st.header("🧠 Model Explainability & Interpretation")
             
-            # Let the user choose which fuel to analyze
             explain_fuel = st.selectbox(
                 "Select a fuel type to analyze:",
                 options=['LP_92', 'LP_95', 'LAD', 'LSD', 'LK'],
@@ -217,14 +229,11 @@ if data_loaded and st.session_state['predicted']:
 
             st.markdown("---")
             
-            # 3. PARTIAL DEPENDENCE PLOT (PDP) - Required by Rubric
             st.subheader("📈 Partial Dependence Plot (PDP)")
             st.write("This plot isolates the most important feature to show its direct, marginal effect on the predicted price, proving alignment with domain knowledge.")
             
-            # Identify the top feature dynamically for the selected fuel
             top_feature = imp_df.iloc[-1]['Feature']
             
-            # 1. Do NOT pre-create the figure. Let SHAP create it automatically.
             shap.plots.partial_dependence(
                 top_feature, 
                 models_dict[explain_fuel].predict, 
@@ -235,18 +244,11 @@ if data_loaded and st.session_state['predicted']:
                 show=False
             )
             
-            # 2. Grab the figure that SHAP just drew on!
             fig_pdp = plt.gcf()
-            fig_pdp.set_size_inches(10, 4) # Adjust the size to fit the dashboard
-            
-            # 3. Add styling
+            fig_pdp.set_size_inches(10, 4)
             plt.grid(True, alpha=0.3)
             plt.tight_layout()
-            
-            # 4. Display in Streamlit
             st.pyplot(fig_pdp)
-            
-            # 5. Clear matplotlib memory so it doesn't overlap with future clicks
             plt.clf()
             plt.close('all')
             
