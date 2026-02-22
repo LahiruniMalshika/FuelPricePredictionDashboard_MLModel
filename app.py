@@ -184,13 +184,6 @@ if data_loaded and predict_button:
                 conf = max(0, 100 - days_ahead*3)
                 st.metric("📊 Confidence", f"{conf:.0f}%", f"{days_ahead} days ahead")
 
-            # ---- Debug section ----
-            with st.expander("🔍 Debug: Feature values used for prediction"):
-                st.write("**Feature vector (scaled)**")
-                st.dataframe(feat_df_scaled.T.rename(columns={0:'value'}))
-                st.write("**Feature vector (original)**")
-                st.dataframe(feat_df.T.rename(columns={0:'value'}))
-
             # ---- Historical chart ----
             st.subheader("📈 Historical Trends")
             two_years_ago = datetime.now() - timedelta(days=1460)
